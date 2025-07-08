@@ -1,0 +1,8 @@
+## Interface: 100207
+## Title: GearScoreVendor
+## Notes: Verkauft Items zwischen zwei Item Level Grenzen mit Warband Token Management
+## Author: Kevin Stühm
+## Version: 2.0.1
+## SavedVariables: GearScoreVendorDB
+
+GearScoreVendor.lua
