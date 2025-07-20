@@ -4,12 +4,12 @@
 ._*
 .Spotlight-V100
 .Trashes
-ehthumbs.db
-Thumbs.db
 __MACOSX
 
 # Windows
-
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Editor/IDE files
 .vscode/
@@ -17,8 +17,31 @@ __MACOSX
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
 
 # Backup files
 *.bak
 *.backup
+*.old
+*.orig
+
+# WoW specific
+*.cache
+WTF/
+Cache/
+Logs/
+
+# Development
+CheckHowIconsWork/
+test/
+temp/
+*.log
+*.tmp
+.claude/
+
+# Build artifacts
+*.zip
+release/
+dist/
 

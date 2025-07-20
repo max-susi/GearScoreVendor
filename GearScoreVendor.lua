@@ -7,13 +7,17 @@ local addonName, ns = ...
 local defaults = {
     min     = 0,
     max     = 0,
-    minimap = { hide = false, pos = 45 }, -- Grad-Position am Minimap-Kreis
+    minimap = { hide = false }, -- Standardmäßig anzeigen, LibDBIcon übernimmt die Position
     presets = {}, -- vordefinierte Level-Presets
     skipWarbandTokens = true, -- Standard: Warband Tokens überspringen
     debugMode = false, -- Debug-Meldungen aktivieren/deaktivieren
 }
 
 local db -- erhält nach ADDON_LOADED den Verweis auf SavedVariables
+
+-- Item-Info Cache für Performance
+local itemInfoCache = {}
+local CACHE_DURATION = 30 -- Cache für 30 Sekunden
 
 ------------------------------------------------------------------------
 -- Hilfsfunktionen                                                      --
@@ -60,20 +64,57 @@ local function GetItemLevel(bag, slot, hyperlink)
     return nil
 end
 
+-- Tooltip Scanner einmal erstellen und wiederverwenden
+local tooltipScanner
+local function GetTooltipScanner()
+    if not tooltipScanner then
+        tooltipScanner = CreateFrame("GameTooltip", "GSVTooltipScanner", nil, "GameTooltipTemplate")
+        tooltipScanner:SetOwner(UIParent, "ANCHOR_NONE")
+    end
+    return tooltipScanner
+end
+
+-- Cache-Management
+local function GetCachedItemInfo(itemID)
+    if not itemID then return nil end
+    local cached = itemInfoCache[itemID]
+    if cached and (GetTime() - cached.timestamp) < CACHE_DURATION then
+        return cached.data
+    end
+    return nil
+end
+
+local function SetCachedItemInfo(itemID, data)
+    if not itemID then return end
+    itemInfoCache[itemID] = {
+        data = data,
+        timestamp = GetTime()
+    }
+end
+
 -- Prüft ob ein Item ein Warband-bound Tier Token ist
 local function IsWarbandToken(hyperlink, itemID)
     if not hyperlink and not itemID then return false end
     
-    -- Tooltip erstellen und scannen für Warband-Binding
+    -- Prüfe Cache zuerst
+    if itemID then
+        local cached = GetCachedItemInfo(itemID)
+        if cached and cached.isWarbandToken ~= nil then
+            return cached.isWarbandToken
+        end
+    end
+    
+    local result = false
+    
+    -- Tooltip wiederverwenden und scannen für Warband-Binding
     if hyperlink then
-        local tooltipName = "GSVTooltipScanner"
-        local tooltip = _G[tooltipName] or CreateFrame("GameTooltip", tooltipName, nil, "GameTooltipTemplate")
-        tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+        local tooltip = GetTooltipScanner()
+        tooltip:ClearLines()
         tooltip:SetHyperlink(hyperlink)
         
         -- Tooltip-Text durchsuchen nach Warband-Binding
         for i = 1, tooltip:NumLines() do
-            local line = _G[tooltipName .. "TextLeft" .. i]
+            local line = _G["GSVTooltipScannerTextLeft" .. i]
             if line then
                 local text = line:GetText()
                 if text then
@@ -83,7 +124,8 @@ local function IsWarbandToken(hyperlink, itemID)
                        string.find(text, "Warband%-gebunden") or
                        string.find(text, "An Kriegstrupp gebunden") then
                         tooltip:Hide()
-                        return true
+                        result = true
+                        break
                     end
                 end
             end
@@ -91,7 +133,14 @@ local function IsWarbandToken(hyperlink, itemID)
         tooltip:Hide()
     end
     
-    return false
+    -- Cache das Ergebnis
+    if itemID then
+        local cached = GetCachedItemInfo(itemID) or {}
+        cached.isWarbandToken = result
+        SetCachedItemInfo(itemID, cached)
+    end
+    
+    return result
 end
 
 -- Prüft ob ein Item übersprungen werden soll (für Verkauf)
@@ -118,6 +167,7 @@ local function FindTierTokens()
                     if IsWarbandToken(info.hyperlink, info.itemID) then
                         local itemName, itemLink = GetItemInfo(info.hyperlink)
                         if itemName then
+                            DebugPrint(string.format("Warband Token gefunden: %s (iLvl %d)", itemName, itemLevel))
                             table.insert(tokens, {
                                 name = itemName,
                                 link = itemLink,
@@ -152,10 +202,15 @@ local function UseToken(bag, slot)
     C_Timer.After(0.1, function()
         C_Container.UseContainerItem(bag, slot)
         
-        -- Merchant-Fenster wieder anzeigen
+        -- Merchant-Fenster wieder anzeigen mit längerer Verzögerung
+        -- um sicherzustellen dass das Token-UI geschlossen ist
         if merchantWasOpen then
-            C_Timer.After(0.3, function()
-                MerchantFrame:Show()
+            C_Timer.After(1.5, function()
+                -- Prüfe ob kein anderes wichtiges UI offen ist
+                if MerchantFrame and (not StaticPopup1 or not StaticPopup1:IsShown()) and 
+                   (not ItemRefTooltip or not ItemRefTooltip:IsShown()) then
+                    MerchantFrame:Show()
+                end
             end)
         end
     end)
@@ -289,15 +344,22 @@ local function StartDirectSell()
                         INVTYPE_RANGED = true,      -- Fernkampfwaffe
                         INVTYPE_RANGEDRIGHT = true, -- Fernkampf rechts
                         INVTYPE_HOLDABLE = true,    -- Gehaltener Gegenstand
+                        INVTYPE_RELIC = true,       -- Artefakt-Relikte
                     }
                     
-                    -- Zusätzliche Prüfung über ItemClass (Waffen = 2, Rüstung = 4)
-                    local isValidItemClass = (itemClassID == 2 or itemClassID == 4) -- Waffen oder Rüstung
+                    -- Zusätzliche Prüfung über ItemClass (Waffen = 2, Rüstung = 4, Gems = 3 für manche Relikte)
+                    local isValidItemClass = (itemClassID == 2 or itemClassID == 4 or itemClassID == 3) -- Waffen, Rüstung oder Gems
                     local isValidEquipSlot = validEquipSlots[itemEquipLoc]
                     
-                    if not isValidEquipSlot or not isValidItemClass then
-                        DebugPrint(string.format("Kein Equipment ignoriert: %s (iLvl %d, EquipLoc: %s, ClassID: %s)", 
-                            itemName, itemLevel, tostring(itemEquipLoc), tostring(itemClassID)))
+                    -- Spezielle Prüfung für Artefakt-Relikte (können verschiedene SubTypes haben)
+                    local isArtifactRelic = false
+                    if itemSubType and (string.find(itemSubType, "Relic") or string.find(itemSubType, "Relikt")) then
+                        isArtifactRelic = true
+                    end
+                    
+                    if (not isValidEquipSlot or not isValidItemClass) and not isArtifactRelic then
+                        DebugPrint(string.format("Kein Equipment ignoriert: %s (iLvl %d, EquipLoc: %s, ClassID: %s, SubType: %s)", 
+                            itemName, itemLevel, tostring(itemEquipLoc), tostring(itemClassID), tostring(itemSubType)))
                     else
                         -- Erweiterte Preis-Prüfung mit mehreren Fallback-Methoden
                         local price = info.vendorPrice
@@ -488,10 +550,14 @@ local function CreateTokenFrame()
 
     -- Funktion zum Aktualisieren der Token-Liste
     function tokenFrame:UpdateTokenList()
-        -- Alte Buttons entfernen
+        -- Alte Buttons entfernen und Frame-Referenzen aufräumen
         for _, btn in ipairs(self.tokenButtons) do
             btn:Hide()
             btn:SetParent(nil)
+            -- Explizit alle Scripts entfernen um Memory-Leaks zu vermeiden
+            btn:SetScript("OnClick", nil)
+            btn:SetScript("OnEnter", nil)
+            btn:SetScript("OnLeave", nil)
         end
         wipe(self.tokenButtons)
 
@@ -557,8 +623,10 @@ local function CreateTokenFrame()
             useBtn:SetScript("OnClick", function()
                 print(string.format("%s: %s verwendet.", addonName, token.name))
                 UseToken(token.bag, token.slot)
-                C_Timer.After(1, function() -- Länger warten für Merchant-Hide/Show Cycle
-                    tokenFrame:UpdateTokenList()
+                C_Timer.After(2, function() -- Länger warten für Merchant-Hide/Show Cycle
+                    if tokenFrame and tokenFrame:IsShown() then
+                        tokenFrame:UpdateTokenList()
+                    end
                 end)
             end)
 
@@ -586,12 +654,25 @@ local function CreateTokenFrame()
         local tokens = FindTierTokens()
         if #tokens > 0 then
             print(string.format("%s: %d Token(s) werden verwendet...", addonName, #tokens))
-            for _, token in ipairs(tokens) do
-                UseToken(token.bag, token.slot)
+            -- Tokens nacheinander mit Verzögerung verwenden
+            local index = 1
+            local function UseNextToken()
+                if index <= #tokens then
+                    local token = tokens[index]
+                    UseToken(token.bag, token.slot)
+                    index = index + 1
+                    -- Nächstes Token nach Verzögerung
+                    C_Timer.After(0.5, UseNextToken)
+                else
+                    -- Alle Tokens verwendet, UI aktualisieren
+                    C_Timer.After(2, function()
+                        if tokenFrame and tokenFrame:IsShown() then
+                            tokenFrame:UpdateTokenList()
+                        end
+                    end)
+                end
             end
-            C_Timer.After(2, function() -- Noch länger warten bei "alle verwenden"
-                tokenFrame:UpdateTokenList()
-            end)
+            UseNextToken()
         end
     end)
 
@@ -640,6 +721,8 @@ local function SellItems()
 
     -- Prüfe zuerst, ob Tier Tokens vorhanden sind
     local tokens = FindTierTokens()
+    DebugPrint(string.format("Gefundene Tokens: %d", #tokens))
+    
     if #tokens > 0 then
         CreateTokenFrame()
         tokenFrame:Show()
@@ -655,78 +738,136 @@ end
 ------------------------------------------------------------------------
 -- GUI: Options‑Frame                                                   --
 ------------------------------------------------------------------------
-StaticPopupDialogs["GSV_SAVE_PRESET"] = {
-    text = "Namen für Preset eingeben:",
-    button1 = "Speichern",
-    button2 = "Abbrechen",
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-    hasEditBox = true,
-    preferredIndex = 3,
-    OnAccept = function(self)
-        local name = self.editBox:GetText():gsub("^%s+",""):gsub("%s+$","")
-        if name == "" then return end
-        db.presets = db.presets or {}
-        db.presets[name] = { min = db.min, max = db.max }
-        print(string.format("%s: Preset '%s' gespeichert (%d-%d).", addonName, name, db.min, db.max))
-        if optionsFrame and optionsFrame.UpdatePresetDropdown then
-            optionsFrame:UpdatePresetDropdown()
-        end
-    end,
-}
-
 local optionsFrame
 local merchantButton
 local tokenFrame
 
 local function CreateOptionsFrame()
-    if optionsFrame then return end -- schon erstellt
+    if optionsFrame then return end
 
+    -- Hauptframe
     optionsFrame = CreateFrame("Frame", "GearScoreVendorOptions", UIParent, "BackdropTemplate")
-    optionsFrame:SetSize(420, 260) -- breiter damit Buttons nebeneinander passen
+    optionsFrame:SetSize(380, 320)
     optionsFrame:SetPoint("CENTER")
     optionsFrame:SetBackdrop({
-        bgFile   = "Interface/Tooltips/UI-Tooltip-Background",
-        edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
-        tile     = true, tileSize = 16, edgeSize = 16,
-        insets   = { left = 3, right = 3, top = 3, bottom = 3 }
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets = { left = 3, right = 3, top = 3, bottom = 3 }
     })
     optionsFrame:SetBackdropColor(0, 0, 0, 0.9)
     optionsFrame:EnableMouse(true)
     optionsFrame:SetMovable(true)
     optionsFrame:RegisterForDrag("LeftButton")
     optionsFrame:SetScript("OnDragStart", optionsFrame.StartMoving)
-    optionsFrame:SetScript("OnDragStop",  optionsFrame.StopMovingOrSizing)
+    optionsFrame:SetScript("OnDragStop", optionsFrame.StopMovingOrSizing)
+    optionsFrame:SetClampedToScreen(true)
 
+    -- Titel
     local title = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
     title:SetPoint("TOP", 0, -12)
     title:SetText("GearScoreVendor")
 
-    -- Close (X) Button
+    -- Close Button
     local closeBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelCloseButton")
-    closeBtn:SetPoint("TOPRIGHT", -6, -6)
+    closeBtn:SetPoint("TOPRIGHT", -2, -2)
 
-    -- Vor-Deklarationen, damit Closure darauf zugreifen kann
+    -- Vor-Deklarationen
     local minEdit, maxEdit, nameEdit
 
-    -----------------------------------
-    -- Preset-Dropdown
-    -----------------------------------
+    -- Min Item Level
+    local minLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    minLabel:SetPoint("TOPLEFT", 30, -50)
+    minLabel:SetText("Min Item Level:")
+
+    minEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
+    minEdit:SetSize(60, 20)
+    minEdit:SetPoint("LEFT", minLabel, "RIGHT", 10, 0)
+    minEdit:SetAutoFocus(false)
+    minEdit:SetNumeric(true)
+
+    -- Max Item Level
+    local maxLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    maxLabel:SetPoint("TOPLEFT", minLabel, "BOTTOMLEFT", 0, -15)
+    maxLabel:SetText("Max Item Level:")
+
+    maxEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
+    maxEdit:SetSize(60, 20)
+    maxEdit:SetPoint("LEFT", maxLabel, "RIGHT", 10, 0)
+    maxEdit:SetAutoFocus(false)
+    maxEdit:SetNumeric(true)
+
+    -- Preset Dropdown
     local presetLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    presetLabel:SetPoint("TOP", 0, -34)
+    presetLabel:SetPoint("TOPLEFT", maxLabel, "BOTTOMLEFT", 0, -25)
     presetLabel:SetText("Preset:")
 
     local presetDrop = CreateFrame("Frame", "GSVPresetDropDown", optionsFrame, "UIDropDownMenuTemplate")
-    presetDrop:SetPoint("TOP", 0, -34)
-    presetLabel:ClearAllPoints()
-    presetLabel:SetPoint("RIGHT", presetDrop, "LEFT", -8, 1)
+    presetDrop:SetPoint("LEFT", presetLabel, "RIGHT", -15, -2)
+    UIDropDownMenu_SetWidth(presetDrop, 150)
 
-    -- Vorwärtsdeklaration, damit später aufrufbar
+    -- Preset Name
+    local nameLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    nameLabel:SetPoint("TOPLEFT", presetLabel, "BOTTOMLEFT", 0, -30)
+    nameLabel:SetText("Preset Name:")
+
+    nameEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
+    nameEdit:SetSize(150, 20)
+    nameEdit:SetPoint("LEFT", nameLabel, "RIGHT", 10, 0)
+    nameEdit:SetAutoFocus(false)
+
+    -- Skip Warband Tokens Checkbox
+    local skipTokensCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
+    skipTokensCheck:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", -5, -35)
+    skipTokensCheck.text = skipTokensCheck:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    skipTokensCheck.text:SetPoint("LEFT", skipTokensCheck, "RIGHT", 0, 0)
+    skipTokensCheck.text:SetText("Warband Tokens überspringen")
+    skipTokensCheck:SetChecked(db.skipWarbandTokens)
+
+    -- Debug Mode Checkbox
+    local debugCheck = CreateFrame("CheckButton", nil, optionsFrame, "UICheckButtonTemplate")
+    debugCheck:SetPoint("TOPLEFT", skipTokensCheck, "BOTTOMLEFT", 0, -5)
+    debugCheck.text = debugCheck:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    debugCheck.text:SetPoint("LEFT", debugCheck, "RIGHT", 0, 0)
+    debugCheck.text:SetText("Debug-Modus")
+    debugCheck:SetChecked(db.debugMode)
+
+    -- Speichern Button
+    local applyBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    applyBtn:SetSize(80, 22)
+    applyBtn:SetPoint("BOTTOMRIGHT", -20, 20)
+    applyBtn:SetText("Speichern")
+
+    -- Preset speichern Button
+    local presetBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    presetBtn:SetSize(110, 22)
+    presetBtn:SetPoint("BOTTOMLEFT", 20, 20)
+    presetBtn:SetText("Preset speichern")
+
+    -- Preset löschen Button
+    local deleteBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    deleteBtn:SetSize(90, 22)
+    deleteBtn:SetPoint("BOTTOM", 0, 20)
+    deleteBtn:SetText("Preset löschen")
+
+    -- UpdatePresetDropdown Funktion
     function optionsFrame:UpdatePresetDropdown()
         UIDropDownMenu_Initialize(presetDrop, function(self, level)
             local info = UIDropDownMenu_CreateInfo()
+            
+            -- "Kein Preset" Option
+            info.text = "Kein Preset"
+            info.func = function()
+                nameEdit:SetText("")
+                UIDropDownMenu_SetText(presetDrop, "Kein Preset")
+            end
+            UIDropDownMenu_AddButton(info)
+            
+            -- Presets
             for name, preset in pairs(db.presets or {}) do
+                info = UIDropDownMenu_CreateInfo()
                 info.text = string.format("%s (%d-%d)", name, preset.min, preset.max)
                 info.func = function()
                     db.min = preset.min
@@ -734,67 +875,28 @@ local function CreateOptionsFrame()
                     minEdit:SetText(db.min)
                     maxEdit:SetText(db.max)
                     nameEdit:SetText(name)
-                    UIDropDownMenu_SetSelectedName(presetDrop, name)
+                    UIDropDownMenu_SetText(presetDrop, name)
                 end
                 UIDropDownMenu_AddButton(info)
             end
         end)
 
-        -- Auswahl merken, falls vorhanden
+        -- Auswahl setzen falls aktuell
+        local foundPreset = false
         for name, preset in pairs(db.presets or {}) do
             if db.min == preset.min and db.max == preset.max then
-                UIDropDownMenu_SetSelectedName(presetDrop, name)
+                UIDropDownMenu_SetText(presetDrop, name)
+                foundPreset = true
                 break
             end
         end
+        
+        if not foundPreset then
+            UIDropDownMenu_SetText(presetDrop, "Kein Preset")
+        end
     end
 
-    -----------------------------------
-    -- Min-Label + EditBox
-    -----------------------------------
-    local minLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    minLabel:SetPoint("TOP",  -60, -90)
-    minLabel:SetText("Min Item Level:")
-
-    minEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
-    minEdit:SetSize(60, 20)
-    minEdit:SetPoint("LEFT", minLabel, "RIGHT", 12, 0)
-    minEdit:SetAutoFocus(false)
-    minEdit:SetNumeric(true)
-
-    -- Max‑Label + EditBox
-    local maxLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    maxLabel:SetPoint("TOP", -60, -120)
-    maxLabel:SetText("Max Item Level:")
-
-    maxEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
-    maxEdit:SetSize(60, 20)
-    maxEdit:SetPoint("LEFT", maxLabel, "RIGHT", 12, 0)
-    maxEdit:SetAutoFocus(false)
-    maxEdit:SetNumeric(true)
-
-    -- Preset Name Row
-    local nameLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    nameLabel:SetPoint("TOP", -60, -150)
-    nameLabel:SetText("Preset-Name:")
-
-    nameEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
-    nameEdit:SetSize(120, 20)
-    nameEdit:SetPoint("LEFT", nameLabel, "RIGHT", 12, 0)
-    nameEdit:SetAutoFocus(false)
-
-    -- Speichern-Button
-    local applyBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
-    applyBtn:SetSize(100, 22)
-    applyBtn:SetPoint("BOTTOMRIGHT", -20, 16)
-    applyBtn:SetText("Speichern")
-
-    -- Preset speichern Button
-    local presetBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
-    presetBtn:SetSize(120, 22)
-    presetBtn:SetPoint("BOTTOMLEFT", 20, 16)
-    presetBtn:SetText("Als Preset speichern")
-
+    -- Event Handlers
     applyBtn:SetScript("OnClick", function()
         local newMin = tonumber(minEdit:GetText()) or 0
         local newMax = tonumber(maxEdit:GetText()) or 0
@@ -816,50 +918,47 @@ local function CreateOptionsFrame()
         db.presets = db.presets or {}
         db.presets[name] = { min = db.min, max = db.max }
         print(string.format("%s: Preset '%s' (%d-%d) gespeichert.", addonName, name, db.min, db.max))
-        if optionsFrame.UpdatePresetDropdown then optionsFrame:UpdatePresetDropdown() end
-    end)
-
-    optionsFrame:SetScript("OnShow", function()
-        minEdit:SetText(db.min)
-        maxEdit:SetText(db.max)
-        nameEdit:SetText("")
-        minEdit:ClearFocus(); maxEdit:ClearFocus()
-        if optionsFrame.UpdatePresetDropdown then
-            optionsFrame:UpdatePresetDropdown()
-        end
-    end)
-
-    tinsert(UISpecialFrames, optionsFrame:GetName()) -- Esc schließt
-
-    -- Dropdown initialisieren
-    if optionsFrame.UpdatePresetDropdown then
         optionsFrame:UpdatePresetDropdown()
-    end
-
-    -- Frame initial hidden to avoid double-toggle issue
-    optionsFrame:Hide()
-
-    -- Preset löschen Button
-    local deleteBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
-    deleteBtn:SetSize(100, 22)
-    deleteBtn:SetPoint("BOTTOM", 0, 16) -- centered bottom, Buttons haben jetzt genug Platz
-    deleteBtn:SetText("Preset löschen")
+    end)
 
     deleteBtn:SetScript("OnClick", function()
         local name = nameEdit:GetText():gsub("^%s+",""):gsub("%s+$","")
         if name == "" then
-            print(addonName .. ": Bitte zunächst einen Preset-Namen wählen oder eingeben.")
+            print(addonName .. ": Bitte ein Preset zum Löschen wählen.")
             return
         end
         if db.presets and db.presets[name] then
             db.presets[name] = nil
             print(string.format("%s: Preset '%s' gelöscht.", addonName, name))
             nameEdit:SetText("")
-            if optionsFrame.UpdatePresetDropdown then optionsFrame:UpdatePresetDropdown() end
+            optionsFrame:UpdatePresetDropdown()
         else
             print(string.format("%s: Preset '%s' nicht gefunden.", addonName, name))
         end
     end)
+
+    skipTokensCheck:SetScript("OnClick", function(self)
+        db.skipWarbandTokens = self:GetChecked()
+    end)
+
+    debugCheck:SetScript("OnClick", function(self)
+        db.debugMode = self:GetChecked()
+    end)
+
+    -- OnShow Handler
+    optionsFrame:SetScript("OnShow", function()
+        minEdit:SetText(db.min)
+        maxEdit:SetText(db.max)
+        nameEdit:SetText("")
+        skipTokensCheck:SetChecked(db.skipWarbandTokens)
+        debugCheck:SetChecked(db.debugMode)
+        minEdit:ClearFocus()
+        maxEdit:ClearFocus()
+        optionsFrame:UpdatePresetDropdown()
+    end)
+
+    tinsert(UISpecialFrames, optionsFrame:GetName())
+    optionsFrame:Hide()
 end
 
 local function CreateMerchantButton()
@@ -891,77 +990,9 @@ end
 
 
 ------------------------------------------------------------------------
--- GUI: Minimap‑Button                                                  --
+-- GUI: Minimap‑Button (mit LibDBIcon)                                 --
 ------------------------------------------------------------------------
-local function PolarToXY(angleDeg, radius)
-    local rad = math.rad(angleDeg)
-    return math.cos(rad) * radius, math.sin(rad) * radius
-end
-
-local miniButton
-local function CreateMinimapButton()
-    miniButton = CreateFrame("Button", "GearScoreVendorMinimapButton", Minimap)
-    miniButton:SetSize(31, 31) -- Standardgröße für runde Buttons
-    miniButton:SetFrameStrata("MEDIUM")
-
-    -- Hintergrund/Rahmen für den modernen Look
-    miniButton:SetNormalTexture("Interface/Minimap/UI-Minimap-Button")
-    miniButton:SetPushedTexture("Interface/Minimap/UI-Minimap-Button-Pushed")
-    miniButton:SetHighlightTexture("Interface/Minimap/UI-Minimap-Button-Highlight", "ADD")
-
-    -- Das eigentliche Icon
-    local icon = miniButton:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(20, 20)
-    icon:SetPoint("CENTER", 0, 0)
-    icon:SetTexture("Interface/ICONS/INV_Misc_Coin_01")
-    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-    -- Runde Maske für das Icon (robuster Ansatz)
-    local mask = miniButton:CreateMaskTexture(nil, "ARTWORK")
-    mask:SetTexture("Interface/CharacterFrame/TempPortraitAlphaMask")
-    mask:SetAllPoints(icon)
-    icon:AddMaskTexture(mask)
-
-    -- Position aktualisieren
-    local function UpdatePosition()
-        local x, y = PolarToXY(db.minimap.pos or 45, 80)
-        miniButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
-    end
-    UpdatePosition()
-
-    -- Drag & Drop um den Kreis
-    miniButton:RegisterForDrag("LeftButton")
-    miniButton:SetScript("OnDragStart", function(self)
-        self:LockHighlight()
-        self:SetScript("OnUpdate", function(self)
-            local mx, my = Minimap:GetCenter()
-            local px, py = GetCursorPosition()
-            local scale = Minimap:GetEffectiveScale()
-            px, py = px / scale, py / scale
-            db.minimap.pos = math.deg(math.atan2(py - my, px - mx)) % 360
-            UpdatePosition()
-        end)
-    end)
-    miniButton:SetScript("OnDragStop", function(self)
-        self:SetScript("OnUpdate", nil)
-        self:UnlockHighlight()
-    end)
-
-    -- Klicks
-    miniButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    miniButton:SetScript("OnClick", function(_, button)
-        if button == "LeftButton" then
-            CreateOptionsFrame()
-            optionsFrame:SetShown(not optionsFrame:IsShown())
-        elseif button == "RightButton" then
-            db.minimap.hide = true
-            miniButton:Hide()
-            print(addonName .. ": Minimapsymbol versteckt. /gsv icon zum Anzeigen.")
-        end
-    end)
-
-    if db.minimap.hide then miniButton:Hide() end
-end
+local LDB, LDBIcon
 
 ------------------------------------------------------------------------
 -- Slash‑Commands                                                       --
@@ -976,6 +1007,7 @@ local function PrintUsage()
     print("|cffffff78/gsv sell|r        – Startet den Verkauf im Händlerfenster.")
     print("|cffffff78/gsv tokens|r      – Zeigt Token-Management GUI.")
     print("|cffffff78/gsv debug|r       – Schaltet Debug-Meldungen ein/aus.")
+    print("|cffffff78/gsv icon|r        – Zeigt/versteckt das Minimap-Symbol.")
 end
 
 local function SlashHandler(msg)
@@ -1064,6 +1096,19 @@ local function SlashHandler(msg)
         db.debugMode = not db.debugMode
         local status = db.debugMode and "aktiviert" or "deaktiviert"
         print(string.format("%s: Debug-Modus %s.", addonName, status))
+    elseif cmd == "icon" then
+        if LDBIcon then
+            db.minimap.hide = not db.minimap.hide
+            if db.minimap.hide then
+                LDBIcon:Hide("GearScoreVendor")
+                print(addonName .. ": Minimap-Symbol versteckt.")
+            else
+                LDBIcon:Show("GearScoreVendor")
+                print(addonName .. ": Minimap-Symbol angezeigt.")
+            end
+        else
+            print(addonName .. ": Minimap-Button nicht gefunden.")
+        end
     else
         PrintUsage()
     end
@@ -1096,6 +1141,30 @@ f:SetScript("OnEvent", function(self, event, ...)
             SLASH_GEARSCOREVENDOR1 = "/gsv"
             SlashCmdList["GEARSCOREVENDOR"] = SlashHandler
 
+            -- LibDataBroker und Minimap-Button initialisieren
+            LDB = LibStub("LibDataBroker-1.1"):NewDataObject("GearScoreVendor", {
+                type = "launcher",
+                icon = "Interface\\AddOns\\GearScoreVendor\\Assets\\icon",
+                OnClick = function(_, button)
+                    if button == "LeftButton" then
+                        CreateOptionsFrame()
+                        optionsFrame:SetShown(not optionsFrame:IsShown())
+                    elseif button == "RightButton" then
+                        -- Rechtsklick zeigt Hilfe
+                        PrintUsage()
+                    end
+                end,
+                OnTooltipShow = function(tooltip)
+                    tooltip:AddLine("|cffffffffGearScoreVendor")
+                    tooltip:AddLine(string.format("Verkauft Items mit Item-Level %d-%d", db.min, db.max))
+                    tooltip:AddLine(" ")
+                    tooltip:AddLine("|cff00ff00Linksklick:|r Optionen öffnen")
+                    tooltip:AddLine("|cff00ff00Rechtsklick:|r Hilfe anzeigen")
+                end,
+            })
+            
+            LDBIcon = LibStub("LibDBIcon-1.0")
+            LDBIcon:Register("GearScoreVendor", LDB, db.minimap)
 
         end
 
@@ -1114,11 +1183,7 @@ f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("MERCHANT_SHOW")
 f:RegisterEvent("MERCHANT_CLOSED")
 
--- Globale Flag, ob aktuell ein Verkaufsvorgang läuft
--- (wird in SellItems/ProcessQueue auf true/false gesetzt)
--- NICHT erneut als lokale Variable deklarieren, damit auch andere
--- Funktionen – insbesondere der Popup-Auto-Bestätiger – darauf
--- zugreifen können.
+-- Globale Flag für den Verkaufsvorgang (muss für den Hook verfügbar sein)
 sellingActive = false
 
 -- Automatisch Popups bestätigen, wenn wir verkaufen
