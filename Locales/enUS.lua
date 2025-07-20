@@ -20,6 +20,7 @@ L["DELETE_PRESET"] = "Delete Preset"
 L["NO_PRESET"] = "No Preset"
 L["SKIP_WARBAND_TOKENS"] = "Skip Warband Tokens"
 L["DEBUG_MODE"] = "Debug Mode"
+L["DEBUG_CONSOLE"] = "Debug Console"
 
 -- Token Frame
 L["WARBAND_TOKENS_FOUND"] = "Warband Tokens Found!"
@@ -83,6 +84,7 @@ L["HELP_LIST"] = "Lists all presets."
 L["HELP_SELL"] = "Starts selling in the merchant window."
 L["HELP_TOKENS"] = "Shows Token Management GUI."
 L["HELP_DEBUG"] = "Toggles debug messages."
+L["HELP_DEBUG_FRAME"] = "Opens/closes the debug window."
 L["HELP_ICON"] = "Shows/hides the minimap icon."
 
 -- Debug Messages

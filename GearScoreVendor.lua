@@ -20,6 +20,11 @@ local db -- erhält nach ADDON_LOADED den Verweis auf SavedVariables
 local itemInfoCache = {}
 local CACHE_DURATION = 30 -- Cache für 30 Sekunden
 
+-- Debug-Frame Variablen
+local debugFrame = nil
+local debugMessages = {}
+local maxDebugMessages = 1000 -- Maximale Anzahl gespeicherter Debug-Nachrichten
+
 ------------------------------------------------------------------------
 -- Hilfsfunktionen                                                      --
 ------------------------------------------------------------------------
@@ -29,10 +34,216 @@ local function Clamp(val, lower, upper)
     return val
 end
 
+-- Debug-Frame erstellen
+local function CreateDebugFrame()
+    if debugFrame then return debugFrame end
+    
+    debugFrame = CreateFrame("Frame", "GearScoreVendorDebugFrame", UIParent, "BackdropTemplate")
+    debugFrame:SetSize(800, 600)
+    debugFrame:SetPoint("CENTER")
+    debugFrame:SetBackdrop({
+        bgFile   = "Interface/Tooltips/UI-Tooltip-Background",
+        edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
+        tile     = true, tileSize = 16, edgeSize = 16,
+        insets   = { left = 3, right = 3, top = 3, bottom = 3 }
+    })
+    debugFrame:SetBackdropColor(0, 0, 0, 0.95)
+    debugFrame:EnableMouse(true)
+    debugFrame:SetMovable(true)
+    debugFrame:RegisterForDrag("LeftButton")
+    debugFrame:SetScript("OnDragStart", debugFrame.StartMoving)
+    debugFrame:SetScript("OnDragStop",  debugFrame.StopMovingOrSizing)
+    debugFrame:SetFrameStrata("DIALOG")
+    debugFrame:Hide()
+
+    -- Titel
+    local title = debugFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    title:SetPoint("TOP", 0, -12)
+    title:SetText("GearScoreVendor Debug Console")
+
+    -- Schließen-Button
+    local closeButton = CreateFrame("Button", nil, debugFrame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", -5, -5)
+    closeButton:SetScript("OnClick", function() debugFrame:Hide() end)
+
+
+
+    -- Löschen-Button
+    local clearButton = CreateFrame("Button", nil, debugFrame, "UIPanelButtonTemplate")
+    clearButton:SetSize(100, 25)
+    clearButton:SetPoint("TOPLEFT", 10, -10)
+    clearButton:SetText("Löschen")
+    clearButton:SetScript("OnClick", function()
+        wipe(debugMessages)
+        if debugFrame.scrollFrame and debugFrame.scrollFrame.text then
+            debugFrame.scrollFrame.text:SetText("")
+            -- Container-Größe zurücksetzen
+            local container = debugFrame.scrollFrame:GetScrollChild()
+            if container then
+                container:SetHeight(1000)
+            end
+        end
+    end)
+
+
+
+    -- Scroll-Frame für Debug-Nachrichten
+    local scrollFrame = CreateFrame("ScrollFrame", nil, debugFrame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 10, -50)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 10)
+
+    -- Container-Frame für den Text (wird als ScrollChild verwendet)
+    local textContainer = CreateFrame("Frame", nil, scrollFrame)
+    textContainer:SetSize(scrollFrame:GetWidth(), 1000) -- Temporäre Größe
+    textContainer:SetPoint("TOPLEFT", 0, 0)
+
+    -- Schreibgeschützte EditBox für markierbaren Text
+    local editBox = CreateFrame("EditBox", nil, textContainer)
+    editBox:SetPoint("TOPLEFT", 5, -5)
+    editBox:SetPoint("BOTTOMRIGHT", -5, 5)
+    editBox:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
+    editBox:SetTextColor(1, 1, 1, 1)
+    editBox:SetMultiLine(true)
+    editBox:SetAutoFocus(false)
+    editBox:EnableMouse(true)
+    editBox:SetMaxLetters(0)
+    editBox:SetJustifyH("LEFT")
+    
+    -- Schreibgeschützt machen aber Markierung erlauben
+    editBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+    
+    -- Verhindern dass Text bearbeitet wird
+    editBox:SetScript("OnChar", function() end)
+    editBox:SetScript("OnKeyDown", function(self, key)
+        -- Nur bestimmte Tasten erlauben (Pfeiltasten, Strg+C, etc.)
+        if key == "LEFT" or key == "RIGHT" or key == "UP" or key == "DOWN" or 
+           key == "HOME" or key == "END" or key == "PAGEUP" or key == "PAGEDOWN" or
+           (IsControlKeyDown() and (key == "C" or key == "A")) then
+            -- Diese Tasten sind erlaubt
+        else
+            -- Andere Tasten blockieren
+            return
+        end
+    end)
+    
+    textContainer.text = editBox
+    scrollFrame:SetScrollChild(textContainer)
+    scrollFrame.text = editBox -- Für einfachen Zugriff
+
+    debugFrame.scrollFrame = scrollFrame
+    return debugFrame
+end
+
+-- Debug-Nachrichten zum Frame hinzufügen
+local function AddDebugMessage(message)
+    -- Sicherstellen dass das Debug-Frame existiert
+    if not debugFrame then
+        CreateDebugFrame()
+    end
+    
+    -- Zeitstempel hinzufügen
+    local timestamp = date("%H:%M:%S")
+    local fullMessage = string.format("[%s] %s", timestamp, message)
+    
+    -- Nachricht zur Liste hinzufügen
+    table.insert(debugMessages, fullMessage)
+    
+    -- Maximale Anzahl nicht überschreiten
+    if #debugMessages > maxDebugMessages then
+        table.remove(debugMessages, 1)
+    end
+    
+    -- Text im Scroll-Frame aktualisieren
+    local text = ""
+    for i, msg in ipairs(debugMessages) do
+        text = text .. msg .. "\n"
+    end
+    
+    -- Sicherstellen dass alle Komponenten existieren
+    if debugFrame and debugFrame.scrollFrame and debugFrame.scrollFrame.text then
+        debugFrame.scrollFrame.text:SetText(text)
+
+        
+        -- Container-Größe an Text-Inhalt anpassen
+        local textHeight = #debugMessages * 14 -- 14px pro Zeile schätzen
+        local container = debugFrame.scrollFrame:GetScrollChild()
+        if container then
+            container:SetHeight(math.max(textHeight + 20, 1000)) -- Mindestens 1000px Höhe
+        end
+        
+        -- Nur scrollen wenn das Frame gerade erst geöffnet wurde oder der Benutzer bereits am Ende war
+        if debugFrame.scrollFrame then
+            local maxScroll = debugFrame.scrollFrame:GetVerticalScrollRange()
+            local currentScroll = debugFrame.scrollFrame:GetVerticalScroll()
+            
+            -- Nur auto-scrollen wenn der Benutzer bereits am oder nahe dem Ende war (innerhalb 50 Pixel)
+            if maxScroll == 0 or currentScroll >= (maxScroll - 50) then
+                C_Timer.After(0.1, function()
+                    if debugFrame and debugFrame.scrollFrame then
+                        debugFrame.scrollFrame:SetVerticalScroll(debugFrame.scrollFrame:GetVerticalScrollRange())
+                    end
+                end)
+            end
+        end
+    end
+end
+
 -- Debug-Hilfsfunktion
-local function DebugPrint(...)
+local function DebugPrint(message)
     if db and db.debugMode then
-        print(addonName .. ": " .. L["DEBUG_PREFIX"], ...)
+        -- Sicherstellen dass das Debug-Frame existiert
+        if not debugFrame then
+            CreateDebugFrame()
+        end
+        
+        AddDebugMessage(message)
+        
+        -- Debug-Frame automatisch anzeigen wenn Nachrichten hinzugefügt werden
+        if debugFrame and not debugFrame:IsShown() then
+            debugFrame:Show()
+        end
+    end
+end
+
+
+
+-- Debug-Frame anzeigen/verstecken
+local function ToggleDebugFrame()
+    if not debugFrame then
+        CreateDebugFrame()
+    end
+    
+    if debugFrame:IsShown() then
+        debugFrame:Hide()
+    else
+        debugFrame:Show()
+        -- Sicherstellen dass vorhandene Debug-Nachrichten angezeigt werden
+        if #debugMessages > 0 then
+            local text = ""
+            for i, msg in ipairs(debugMessages) do
+                text = text .. msg .. "\n"
+            end
+            
+            if debugFrame.scrollFrame and debugFrame.scrollFrame.text then
+                debugFrame.scrollFrame.text:SetText(text)
+                
+                -- Container-Größe an Text-Inhalt anpassen
+                local textHeight = #debugMessages * 14 -- 14px pro Zeile schätzen
+                local container = debugFrame.scrollFrame:GetScrollChild()
+                if container then
+                    container:SetHeight(math.max(textHeight + 20, 1000))
+                end
+                
+                -- Beim ersten Öffnen zum Ende scrollen
+                C_Timer.After(0.1, function()
+                    if debugFrame and debugFrame.scrollFrame then
+                        debugFrame.scrollFrame:SetVerticalScroll(debugFrame.scrollFrame:GetVerticalScrollRange())
+                    end
+                end)
+            end
+        end
     end
 end
 
@@ -835,6 +1046,8 @@ local function CreateOptionsFrame()
     debugCheck.text:SetText(L["DEBUG_MODE"])
     debugCheck:SetChecked(db.debugMode)
 
+
+
     -- Speichern Button
     local applyBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
     applyBtn:SetSize(80, 22)
@@ -944,7 +1157,13 @@ local function CreateOptionsFrame()
 
     debugCheck:SetScript("OnClick", function(self)
         db.debugMode = self:GetChecked()
+        -- Debug-Frame automatisch öffnen wenn Debug-Modus aktiviert wird
+        if db.debugMode and not debugFrame then
+            CreateDebugFrame()
+        end
     end)
+
+
 
     -- OnShow Handler
     optionsFrame:SetScript("OnShow", function()
@@ -1008,6 +1227,7 @@ local function PrintUsage()
     print("|cffffff78/gsv sell|r        – " .. L["HELP_SELL"])
     print("|cffffff78/gsv tokens|r      – " .. L["HELP_TOKENS"])
     print("|cffffff78/gsv debug|r       – " .. L["HELP_DEBUG"])
+    print("|cffffff78/gsv debugframe|r  – " .. L["HELP_DEBUG_FRAME"])
     print("|cffffff78/gsv icon|r        – " .. L["HELP_ICON"])
 end
 
@@ -1097,6 +1317,8 @@ local function SlashHandler(msg)
         db.debugMode = not db.debugMode
         local statusKey = db.debugMode and "DEBUG_ENABLED" or "DEBUG_DISABLED"
         print(string.format("%s: " .. L[statusKey], addonName))
+    elseif cmd == "debugframe" then
+        ToggleDebugFrame()
     elseif cmd == "icon" then
         if LDBIcon then
             db.minimap.hide = not db.minimap.hide
@@ -1151,8 +1373,13 @@ f:SetScript("OnEvent", function(self, event, ...)
                         CreateOptionsFrame()
                         optionsFrame:SetShown(not optionsFrame:IsShown())
                     elseif button == "RightButton" then
-                        -- Rechtsklick zeigt Hilfe
-                        PrintUsage()
+                        if IsShiftKeyDown() then
+                            -- Shift+Rechtsklick öffnet Debug-Frame
+                            ToggleDebugFrame()
+                        else
+                            -- Rechtsklick zeigt Hilfe
+                            PrintUsage()
+                        end
                     end
                 end,
                 OnTooltipShow = function(tooltip)
@@ -1161,6 +1388,7 @@ f:SetScript("OnEvent", function(self, event, ...)
                     tooltip:AddLine(" ")
                     tooltip:AddLine("|cff00ff00" .. L["LEFT_CLICK"] .. "|r " .. L["OPEN_OPTIONS"])
                     tooltip:AddLine("|cff00ff00" .. L["RIGHT_CLICK"] .. "|r " .. L["SHOW_HELP"])
+                    tooltip:AddLine("|cff00ff00Shift+" .. L["RIGHT_CLICK"] .. "|r Debug Console")
                 end,
             })
             
