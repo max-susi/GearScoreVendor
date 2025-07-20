@@ -20,6 +20,9 @@ local db -- erhält nach ADDON_LOADED den Verweis auf SavedVariables
 local itemInfoCache = {}
 local CACHE_DURATION = 30 -- Cache für 30 Sekunden
 
+-- Track items that need retry for tooltip scanning
+local pendingTooltipScans = {}
+
 -- Debug-Frame Variablen
 local debugFrame = nil
 local debugMessages = {}
@@ -308,47 +311,150 @@ end
 local function IsWarbandToken(hyperlink, itemID)
     if not hyperlink and not itemID then return false end
     
-    -- Prüfe Cache zuerst
+    -- Prüfe Cache zuerst - aber nur wenn er definitiv gesetzt wurde
     if itemID then
         local cached = GetCachedItemInfo(itemID)
-        if cached and cached.isWarbandToken ~= nil then
+        if cached and cached.isWarbandToken ~= nil and cached.hasCompleteTooltip then
             return cached.isWarbandToken
         end
     end
     
     local result = false
+    local hasCompleteTooltip = false
     
     -- Tooltip wiederverwenden und scannen für Warband-Binding
     if hyperlink then
         local tooltip = GetTooltipScanner()
         tooltip:ClearLines()
-        tooltip:SetHyperlink(hyperlink)
         
-        -- Tooltip-Text durchsuchen nach Warband-Binding
-        for i = 1, tooltip:NumLines() do
-            local line = _G["GSVTooltipScannerTextLeft" .. i]
-            if line then
-                local text = line:GetText()
-                if text then
-                    -- Deutsche und englische Warband-Texte
-                    if string.find(text, "Binds to Warband") or 
-                       string.find(text, "warband%-bound") or
-                       string.find(text, "Warband%-gebunden") or
-                       string.find(text, "An Kriegstrupp gebunden") then
-                        tooltip:Hide()
-                        result = true
-                        break
+        -- Use pcall to catch any errors from SetHyperlink
+        local success, err = pcall(function()
+            tooltip:SetHyperlink(hyperlink)
+        end)
+        
+        if not success then
+            DebugPrint(string.format("SetHyperlink failed for item: %s, error: %s", tostring(hyperlink), tostring(err)))
+            -- Don't cache failed attempts
+            return false
+        end
+        
+        -- Prüfe ob Tooltip vollständig geladen ist (mehr als 2 Zeilen)
+        local numLines = tooltip:NumLines()
+        
+        -- If tooltip has 0 lines, the item data might not be loaded yet
+        if numLines == 0 then
+            -- Get more info about why the tooltip might have failed
+            local itemName, itemLink, itemQuality, itemLevel = GetItemInfo(hyperlink or itemID)
+            
+            -- Request item info to trigger loading
+            if itemID then
+                C_Item.RequestLoadItemDataByID(itemID)
+            elseif hyperlink then
+                -- Extract itemID from hyperlink if not provided
+                local _, _, itemString = string.find(hyperlink, "item:(%d+)")
+                if itemString then
+                    local extractedID = tonumber(itemString)
+                    C_Item.RequestLoadItemDataByID(extractedID)
+                    -- Mark this item as pending
+                    pendingTooltipScans[extractedID] = true
+                end
+            end
+            
+            DebugPrint(string.format("Tooltip returned 0 lines for %s (iLvl %s), item data may not be loaded yet: %s", 
+                tostring(itemName), tostring(itemLevel), tostring(hyperlink)))
+            
+            -- If we have basic item info but tooltip failed, it might be a transient issue
+            if itemName and itemLevel then
+                DebugPrint("Basic item info available but tooltip scan failed - this suggests a tooltip API issue")
+            end
+            
+            -- Don't cache incomplete results
+            tooltip:Hide()
+            
+            -- Für Items mit bekannten Token-Namen sollten wir true zurückgeben
+            -- auch wenn der Tooltip nicht geladen werden konnte
+            if hyperlink then
+                local itemName = GetItemInfo(hyperlink)
+                if itemName then
+                    local lowerName = string.lower(itemName)
+                    if (string.find(lowerName, "wayward") or 
+                        string.find(lowerName, "conqueror") or
+                        string.find(lowerName, "vanquisher") or
+                        string.find(lowerName, "protector") or
+                        string.find(lowerName, "hero") or
+                        string.find(lowerName, "champion")) then
+                        local _, _, _, _, _, _, _, _, _, _, _, itemClassID = GetItemInfo(hyperlink)
+                        if itemClassID == 15 then
+                            DebugPrint(string.format("Tooltip failed but item has token name pattern, assuming Warband token: %s", itemName))
+                            return true  -- Assume it's a token based on name
+                        end
                     end
                 end
             end
+            
+            return false
         end
+        
+        if numLines > 2 then
+            hasCompleteTooltip = true
+            
+            -- Tooltip-Text durchsuchen nach Warband-Binding
+            for i = 1, numLines do
+                local line = _G["GSVTooltipScannerTextLeft" .. i]
+                if line then
+                    local text = line:GetText()
+                    if text then
+                        -- Erweiterte Warband-Text Erkennung (case-insensitive)
+                        local lowerText = string.lower(text)
+                        if string.find(lowerText, "warb") or  -- Fängt Warband, Warbound, etc.
+                           string.find(lowerText, "kriegstrupp") or  -- Deutsch
+                           string.find(text, "Account%-wide") or  -- Manchmal als Account-wide markiert
+                           string.find(text, "Battle%.net") then  -- Battle.net gebunden
+                            
+                            -- Debug für gefundene Warband-Texte
+                            DebugPrint(string.format("Warband text found in tooltip line %d: %s", i, text))
+                            tooltip:Hide()
+                            result = true
+                            break
+                        end
+                    end
+                end
+            end
+            
+            -- Zusätzliche Prüfung: Tier Token Namen enthalten oft bestimmte Muster
+            if not result and hyperlink then
+                local itemName = GetItemInfo(hyperlink)
+                if itemName then
+                    local lowerName = string.lower(itemName)
+                    -- Typische Tier Token Namen
+                    if string.find(lowerName, "wayward") or 
+                       string.find(lowerName, "conqueror") or
+                       string.find(lowerName, "vanquisher") or
+                       string.find(lowerName, "protector") or
+                       string.find(lowerName, "hero") or
+                       string.find(lowerName, "champion") then
+                        -- Wenn es ein typischer Token-Name ist und ClassID 15 (Misc) hat, 
+                        -- ist es wahrscheinlich ein Token
+                        local _, _, _, _, _, _, _, _, _, _, _, itemClassID = GetItemInfo(hyperlink)
+                        if itemClassID == 15 then
+                            DebugPrint(string.format("Item identified as likely token by name pattern: %s", itemName))
+                            result = true
+                        end
+                    end
+                end
+            end
+        else
+            DebugPrint(string.format("Tooltip not fully loaded (only %d lines) for item", numLines))
+        end
+        
         tooltip:Hide()
     end
     
-    -- Cache das Ergebnis
-    if itemID then
+    -- Cache das Ergebnis nur wenn Tooltip vollständig war
+    if itemID and hasCompleteTooltip then
         local cached = GetCachedItemInfo(itemID) or {}
         cached.isWarbandToken = result
+        cached.hasCompleteTooltip = hasCompleteTooltip
         SetCachedItemInfo(itemID, cached)
     end
     
@@ -569,7 +675,14 @@ local function StartDirectSell()
                         isArtifactRelic = true
                     end
                     
-                    if (not isValidEquipSlot or not isValidItemClass) and not isArtifactRelic then
+                    -- Prüfe ob es ein Warbound-Item ist
+                    local isWarbandItem = IsWarbandToken(info.hyperlink, info.itemID)
+                    
+                    -- If tooltip scan failed (0 lines), we can't determine if it's a warband item
+                    -- In this case, check if it might be equipment based on other criteria
+                    local couldBeEquipment = isValidEquipSlot and isValidItemClass
+                    
+                    if (not isValidEquipSlot or not isValidItemClass) and not isArtifactRelic and not isWarbandItem and not couldBeEquipment then
                         DebugPrint(string.format(L["DEBUG_NO_EQUIPMENT"], 
                             itemName, itemLevel, tostring(itemEquipLoc), tostring(itemClassID), tostring(itemSubType)))
                     else
@@ -818,12 +931,32 @@ local function CreateTokenFrame()
             sellBtn:SetText(L["SELL"])
 
             sellBtn:SetScript("OnClick", function()
-                print(string.format("%s: " .. L["TOKEN_SOLD"], addonName, token.name))
-                -- Item direkt verkaufen (moderne API)
-                C_Container.UseContainerItem(token.bag, token.slot)
-                C_Timer.After(0.5, function()
-                    tokenFrame:UpdateTokenList()
-                end)
+                -- Sicherstellen dass der Händler offen ist
+                if not MerchantFrame or not MerchantFrame:IsShown() then
+                    -- Token-Frame verstecken und Merchant-Frame zeigen
+                    tokenFrame:Hide()
+                    if MerchantFrame then
+                        MerchantFrame:Show()
+                    end
+                    -- Mit kleiner Verzögerung nochmal versuchen
+                    C_Timer.After(0.1, function()
+                        if MerchantFrame and MerchantFrame:IsShown() then
+                            print(string.format("%s: " .. L["TOKEN_SOLD"], addonName, token.name))
+                            C_Container.UseContainerItem(token.bag, token.slot)
+                        else
+                            print(addonName .. ": " .. L["MERCHANT_REQUIRED"])
+                        end
+                    end)
+                else
+                    -- Merchant ist offen, direkt verkaufen
+                    print(string.format("%s: " .. L["TOKEN_SOLD"], addonName, token.name))
+                    C_Container.UseContainerItem(token.bag, token.slot)
+                    
+                    -- Token-Frame schließen nach Verkauf
+                    C_Timer.After(0.2, function()
+                        tokenFrame:Hide()
+                    end)
+                end
             end)
 
             -- Use Button
@@ -1405,12 +1538,21 @@ f:SetScript("OnEvent", function(self, event, ...)
         if merchantButton then
             merchantButton:Hide()
         end
+    elseif event == "GET_ITEM_INFO_RECEIVED" then
+        -- Check if we have pending tooltip scans for this item
+        local itemID = arg1
+        if pendingTooltipScans[itemID] then
+            DebugPrint(string.format("Item data loaded for ID %d, retrying tooltip scan", itemID))
+            -- Clear the pending flag
+            pendingTooltipScans[itemID] = nil
+        end
     end
 end)
 
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("MERCHANT_SHOW")
 f:RegisterEvent("MERCHANT_CLOSED")
+f:RegisterEvent("GET_ITEM_INFO_RECEIVED") -- Listen for item data loads
 
 -- Globale Flag für den Verkaufsvorgang (muss für den Hook verfügbar sein)
 sellingActive = false
