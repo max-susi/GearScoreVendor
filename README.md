@@ -64,7 +64,7 @@ Wenn Warband-gebundene Tier-Tokens im konfigurierten Item-Level-Bereich gefunden
 ### Version
 - **Aktuelle Version**: 2.0.1
 - **Interface**: 100207 (WoW Retail)
-- **Autor**: Kevin Stühm
+- **Autor**: c4gg-dev
 
 ## Bekannte Probleme
 - Keine derzeit bekannt

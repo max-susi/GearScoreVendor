@@ -1,5 +1,6 @@
 -- Version 2.0.1 - Fixed GetItemBindType API error
 local addonName, ns = ...
+local L = ns.L
 
 ------------------------------------------------------------------------
 -- SavedVariables‑Handling                                              --
@@ -31,7 +32,7 @@ end
 -- Debug-Hilfsfunktion
 local function DebugPrint(...)
     if db and db.debugMode then
-        print(addonName .. ": DEBUG -", ...)
+        print(addonName .. ": " .. L["DEBUG_PREFIX"], ...)
     end
 end
 
@@ -167,7 +168,7 @@ local function FindTierTokens()
                     if IsWarbandToken(info.hyperlink, info.itemID) then
                         local itemName, itemLink = GetItemInfo(info.hyperlink)
                         if itemName then
-                            DebugPrint(string.format("Warband Token gefunden: %s (iLvl %d)", itemName, itemLevel))
+                            DebugPrint(string.format(L["DEBUG_WARBAND_TOKEN_FOUND"], itemName, itemLevel))
                             table.insert(tokens, {
                                 name = itemName,
                                 link = itemLink,
@@ -231,7 +232,7 @@ local function ProcessQueue()
         -- Sicherheitsprüfung: Item nochmal auf Verkaufbarkeit prüfen
         local info = C_Container.GetContainerItemInfo(entry.bag, entry.slot)
         if info and info.hyperlink and not info.isLocked then
-            DebugPrint(string.format("Verkaufe: %s (Bag: %d, Slot: %d)", 
+            DebugPrint(string.format(L["DEBUG_SELLING"], 
                 entry.itemName or "Unknown", entry.bag, entry.slot))
             
             -- Umfassende Preis-Prüfung mit mehreren Methoden
@@ -254,40 +255,40 @@ local function ProcessQueue()
             
                          if not currentPrice or currentPrice <= 0 then
                 canSell = false
-                skipReason = "Kein Verkaufspreis"
+                skipReason = L["NO_SELL_PRICE"]
             elseif not entry.itemLevel or entry.itemLevel <= 0 then
                 canSell = false
-                skipReason = "Kein ItemLevel"
+                skipReason = L["NO_ITEM_LEVEL"]
             elseif itemType == "Quest" or itemSubType == "Quest" then
                 canSell = false  
-                skipReason = "Quest Item"
+                skipReason = L["QUEST_ITEM"]
             elseif itemType == "Key" or itemSubType == "Key" then
                 canSell = false
-                skipReason = "Schlüssel"
+                skipReason = L["KEY_ITEM"]
             elseif itemClassID == 12 then -- Quest items haben oft ClassID 12
                 canSell = false
-                skipReason = "Quest ClassID"
+                skipReason = L["QUEST_CLASS_ID"]
             elseif info.isBound and info.isBound == true then
                 -- Zusätzliche Prüfung auf Binding-Status
                 -- Manche gebundene Items können trotzdem verkauft werden
-                DebugPrint(string.format("Item ist gebunden: %s", itemName or "Unknown"))
+                DebugPrint(string.format(L["DEBUG_ITEM_BOUND"], itemName or "Unknown"))
             end
             
             if canSell then
                 -- Item auf den Cursor legen (wird beim Verkaufen benötigt)
                 C_Container.UseContainerItem(entry.bag, entry.slot)
-                DebugPrint(string.format("Verkaufsversuch für: %s (Preis: %sc)", 
+                DebugPrint(string.format(L["DEBUG_SALE_ATTEMPT"], 
                     itemName or "Unknown", currentPrice))
                 -- NICHT sofort ClearCursor() aufrufen, da bei Gegenständen
                 -- mit Handels-Timer das Bestätigungsfenster (StaticPopup)
                 -- eine Aktion auf das Cursor-Item erwartet. ClearCursor würde
                 -- das Item verwerfen und der Verkauf schlägt fehl.
             else
-                DebugPrint(string.format("Item übersprungen - %s: %s", 
+                DebugPrint(string.format(L["DEBUG_ITEM_SKIPPED"], 
                     skipReason, itemName or "Unknown"))
             end
         else
-            DebugPrint(string.format("Item übersprungen (nicht verfügbar): %s", 
+            DebugPrint(string.format(L["DEBUG_ITEM_SKIPPED_NA"], 
                 entry.itemName or "Unknown"))
         end
     end
@@ -297,7 +298,7 @@ local function ProcessQueue()
         C_Timer.After(0.15, ProcessQueue) -- 150 ms Verzögerung
     else
         sellingActive = false
-        print(string.format("%s: Verkauf abgeschlossen (%d Item(s)).", addonName, queueTotal))
+        print(string.format("%s: " .. L["SELL_COMPLETE"], addonName, queueTotal))
     end
 end
 
@@ -358,7 +359,7 @@ local function StartDirectSell()
                     end
                     
                     if (not isValidEquipSlot or not isValidItemClass) and not isArtifactRelic then
-                        DebugPrint(string.format("Kein Equipment ignoriert: %s (iLvl %d, EquipLoc: %s, ClassID: %s, SubType: %s)", 
+                        DebugPrint(string.format(L["DEBUG_NO_EQUIPMENT"], 
                             itemName, itemLevel, tostring(itemEquipLoc), tostring(itemClassID), tostring(itemSubType)))
                     else
                         -- Erweiterte Preis-Prüfung mit mehreren Fallback-Methoden
@@ -382,13 +383,13 @@ local function StartDirectSell()
                             if itemType then
                                 if itemType == "Quest" or itemSubType == "Quest" then
                                     isProblematic = true
-                                    problemReason = "Quest Item"
+                                    problemReason = L["QUEST_ITEM"]
                                 elseif itemType == "Key" or itemSubType == "Key" then
                                     isProblematic = true
-                                    problemReason = "Schlüssel"
+                                    problemReason = L["KEY_ITEM"]
                                 elseif itemClassID == 12 then -- Quest items
                                     isProblematic = true
-                                    problemReason = "Quest ClassID"
+                                    problemReason = L["QUEST_CLASS_ID"]
                                 end
                             end
                             
@@ -396,30 +397,30 @@ local function StartDirectSell()
                                 -- Prüfe ob es ein Warband Token ist
                                 if ShouldSkipItem(info.hyperlink, info.itemID) then
                                     skippedTokens = skippedTokens + 1
-                                    DebugPrint(string.format("Warband Token übersprungen: %s (iLvl %d)", 
+                                    DebugPrint(string.format(L["DEBUG_WARBAND_TOKEN_SKIPPED"], 
                                         itemName, itemLevel))
                                 else
                                     -- HIER kommen nur Items an die: gültiges ItemLevel im Range haben, anlegbar sind, Verkaufspreis haben, nicht problematisch sind
-                                    DebugPrint(string.format("Zur Queue hinzugefügt: %s (iLvl %d, Preis: %sc, EquipLoc: %s)", 
+                                    DebugPrint(string.format(L["DEBUG_ADDED_TO_QUEUE"], 
                                         itemName, itemLevel, price, itemEquipLoc))
                                     tinsert(sellQueue, { bag = bag, slot = slot, price = price, itemName = itemName, itemLevel = itemLevel })
                                     queueTotal = queueTotal + 1
                                 end
                             else
-                                DebugPrint(string.format("Item gefiltert (%s): %s (iLvl %d)", 
+                                DebugPrint(string.format(L["DEBUG_ITEM_FILTERED"], 
                                     problemReason, itemName, itemLevel))
                             end
                         else
-                            DebugPrint(string.format("Item ohne Verkaufspreis ignoriert: %s (iLvl %d)", 
+                            DebugPrint(string.format(L["DEBUG_NO_PRICE"], 
                                 itemName, itemLevel))
                         end
                     end
                 else
                     if not itemLevel or itemLevel <= 0 then
-                        DebugPrint(string.format("Item ohne ItemLevel ignoriert: %s", 
+                        DebugPrint(string.format(L["DEBUG_NO_ITEM_LEVEL"], 
                             itemName))
                     else
-                        DebugPrint(string.format("Item außerhalb Level-Bereich ignoriert: %s (iLvl %d, Range: %d-%d)", 
+                        DebugPrint(string.format(L["DEBUG_OUT_OF_RANGE"], 
                             itemName, itemLevel, db.min, db.max))
                     end
                 end
@@ -428,15 +429,15 @@ local function StartDirectSell()
     end
 
     if skippedTokens > 0 then
-        print(string.format("%s: %d Warband Token(s) übersprungen.", addonName, skippedTokens))
+        print(string.format("%s: " .. L["TOKENS_SKIPPED"], addonName, skippedTokens))
     end
 
     if queueTotal == 0 then
-        print(addonName .. ": Keine passenden Items gefunden.")
+        print(addonName .. ": " .. L["NO_ITEMS_FOUND"])
         return
     end
 
-    print(string.format("%s: Verkaufe %d Item(s)...", addonName, queueTotal))
+    print(string.format("%s: " .. L["SELLING_ITEMS"], addonName, queueTotal))
     ProcessQueue()
 end
 
@@ -487,22 +488,22 @@ local function CreateTokenFrame()
 
     local title = tokenFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
     title:SetPoint("TOP", 0, -12)
-    title:SetText("Warband Tokens gefunden!")
+    title:SetText(L["WARBAND_TOKENS_FOUND"])
 
     local subtitle1 = tokenFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     subtitle1:SetPoint("TOP", 0, -32)
-    subtitle1:SetText(string.format("Items im Level-Bereich %d-%d", db.min, db.max))
+    subtitle1:SetText(string.format(L["ITEMS_IN_LEVEL_RANGE"], db.min, db.max))
 
     local subtitle2 = tokenFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     subtitle2:SetPoint("TOP", 0, -48)
-    subtitle2:SetText("Möchten Sie diese Tokens vor dem Verkauf verwenden?")
+    subtitle2:SetText(L["USE_TOKENS_QUESTION"])
 
     -- Skip Warband Tokens Checkbox (zentriert)
     local skipCheckbox = CreateFrame("CheckButton", nil, tokenFrame, "UICheckButtonTemplate")
     skipCheckbox:SetSize(24, 24)
     
     local skipLabel = tokenFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    skipLabel:SetText("Warband Tokens beim Verkauf überspringen")
+    skipLabel:SetText(L["SKIP_WARBAND_TOKENS_SELLING"])
     skipLabel:SetTextColor(1, 1, 1)
     
     -- Berechne Gesamtbreite für Zentrierung
@@ -534,19 +535,19 @@ local function CreateTokenFrame()
     local useAllBtn = CreateFrame("Button", nil, tokenFrame, "UIPanelButtonTemplate")
     useAllBtn:SetSize(120, 25)
     useAllBtn:SetPoint("BOTTOMLEFT", 15, 15)
-    useAllBtn:SetText("Alle verwenden")
+    useAllBtn:SetText(L["USE_ALL"])
 
     -- "Weiter verkaufen" Button  
     local continueBtn = CreateFrame("Button", nil, tokenFrame, "UIPanelButtonTemplate")
     continueBtn:SetSize(140, 25) -- Einheitliche Höhe
     continueBtn:SetPoint("BOTTOMRIGHT", -15, 15)
-    continueBtn:SetText("Weiter verkaufen")
+    continueBtn:SetText(L["CONTINUE_SELLING"])
 
     -- "Abbrechen" Button
     local cancelBtn = CreateFrame("Button", nil, tokenFrame, "UIPanelButtonTemplate")
     cancelBtn:SetSize(100, 25)
     cancelBtn:SetPoint("BOTTOM", 0, 15)
-    cancelBtn:SetText("Abbrechen")
+    cancelBtn:SetText(L["CANCEL"])
 
     -- Funktion zum Aktualisieren der Token-Liste
     function tokenFrame:UpdateTokenList()
@@ -603,10 +604,10 @@ local function CreateTokenFrame()
             local sellBtn = CreateFrame("Button", nil, tokenBtn, "UIPanelButtonTemplate")
             sellBtn:SetSize(85, 20)
             sellBtn:SetPoint("RIGHT", -8, 0)
-            sellBtn:SetText("Verkaufen")
+            sellBtn:SetText(L["SELL"])
 
             sellBtn:SetScript("OnClick", function()
-                print(string.format("%s: %s verkauft.", addonName, token.name))
+                print(string.format("%s: " .. L["TOKEN_SOLD"], addonName, token.name))
                 -- Item direkt verkaufen (moderne API)
                 C_Container.UseContainerItem(token.bag, token.slot)
                 C_Timer.After(0.5, function()
@@ -618,10 +619,10 @@ local function CreateTokenFrame()
             local useBtn = CreateFrame("Button", nil, tokenBtn, "UIPanelButtonTemplate")
             useBtn:SetSize(85, 20)
             useBtn:SetPoint("RIGHT", sellBtn, "LEFT", -5, 0)
-            useBtn:SetText("Verwenden")
+            useBtn:SetText(L["USE"])
 
             useBtn:SetScript("OnClick", function()
-                print(string.format("%s: %s verwendet.", addonName, token.name))
+                print(string.format("%s: " .. L["TOKEN_USED"], addonName, token.name))
                 UseToken(token.bag, token.slot)
                 C_Timer.After(2, function() -- Länger warten für Merchant-Hide/Show Cycle
                     if tokenFrame and tokenFrame:IsShown() then
@@ -653,7 +654,7 @@ local function CreateTokenFrame()
     useAllBtn:SetScript("OnClick", function()
         local tokens = FindTierTokens()
         if #tokens > 0 then
-            print(string.format("%s: %d Token(s) werden verwendet...", addonName, #tokens))
+            print(string.format("%s: " .. L["TOKENS_BEING_USED"], addonName, #tokens))
             -- Tokens nacheinander mit Verzögerung verwenden
             local index = 1
             local function UseNextToken()
@@ -684,9 +685,9 @@ local function CreateTokenFrame()
     -- Button-Text dynamisch anpassen basierend auf Checkbox-Status
     local function UpdateContinueButtonText()
         if db.skipWarbandTokens then
-            continueBtn:SetText("Weiter verkaufen")
+            continueBtn:SetText(L["CONTINUE_SELLING"])
         else
-            continueBtn:SetText("Alles verkaufen")
+            continueBtn:SetText(L["SELL_ALL"])
         end
     end
     
@@ -696,8 +697,8 @@ local function CreateTokenFrame()
     -- Checkbox-Handler erweitern um Button-Text zu aktualisieren
     skipCheckbox:SetScript("OnClick", function(self)
         db.skipWarbandTokens = self:GetChecked()
-        local status = db.skipWarbandTokens and "aktiviert" or "deaktiviert"
-        print(string.format("%s: Warband Token Skip %s.", addonName, status))
+        local statusKey = db.skipWarbandTokens and "WARBAND_SKIP_ENABLED" or "WARBAND_SKIP_DISABLED"
+        print(string.format("%s: " .. L[statusKey], addonName))
         UpdateContinueButtonText()
     end)
 
@@ -715,13 +716,13 @@ end
 
 local function SellItems()
     if not MerchantFrame or not MerchantFrame:IsShown() then
-        print(addonName .. ": Du musst ein Händlerfenster geöffnet haben, um Items zu verkaufen.")
+        print(addonName .. ": " .. L["MERCHANT_REQUIRED"])
         return
     end
 
     -- Prüfe zuerst, ob Tier Tokens vorhanden sind
     local tokens = FindTierTokens()
-    DebugPrint(string.format("Gefundene Tokens: %d", #tokens))
+    DebugPrint(string.format(L["DEBUG_TOKENS_FOUND"], #tokens))
     
     if #tokens > 0 then
         CreateTokenFrame()
@@ -780,7 +781,7 @@ local function CreateOptionsFrame()
     -- Min Item Level
     local minLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     minLabel:SetPoint("TOPLEFT", 30, -50)
-    minLabel:SetText("Min Item Level:")
+    minLabel:SetText(L["MIN_ITEM_LEVEL"])
 
     minEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
     minEdit:SetSize(60, 20)
@@ -791,7 +792,7 @@ local function CreateOptionsFrame()
     -- Max Item Level
     local maxLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     maxLabel:SetPoint("TOPLEFT", minLabel, "BOTTOMLEFT", 0, -15)
-    maxLabel:SetText("Max Item Level:")
+    maxLabel:SetText(L["MAX_ITEM_LEVEL"])
 
     maxEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
     maxEdit:SetSize(60, 20)
@@ -802,7 +803,7 @@ local function CreateOptionsFrame()
     -- Preset Dropdown
     local presetLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     presetLabel:SetPoint("TOPLEFT", maxLabel, "BOTTOMLEFT", 0, -25)
-    presetLabel:SetText("Preset:")
+    presetLabel:SetText(L["PRESET"])
 
     local presetDrop = CreateFrame("Frame", "GSVPresetDropDown", optionsFrame, "UIDropDownMenuTemplate")
     presetDrop:SetPoint("LEFT", presetLabel, "RIGHT", -15, -2)
@@ -811,7 +812,7 @@ local function CreateOptionsFrame()
     -- Preset Name
     local nameLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     nameLabel:SetPoint("TOPLEFT", presetLabel, "BOTTOMLEFT", 0, -30)
-    nameLabel:SetText("Preset Name:")
+    nameLabel:SetText(L["PRESET_NAME"])
 
     nameEdit = CreateFrame("EditBox", nil, optionsFrame, "InputBoxTemplate")
     nameEdit:SetSize(150, 20)
@@ -823,7 +824,7 @@ local function CreateOptionsFrame()
     skipTokensCheck:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", -5, -35)
     skipTokensCheck.text = skipTokensCheck:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     skipTokensCheck.text:SetPoint("LEFT", skipTokensCheck, "RIGHT", 0, 0)
-    skipTokensCheck.text:SetText("Warband Tokens überspringen")
+    skipTokensCheck.text:SetText(L["SKIP_WARBAND_TOKENS"])
     skipTokensCheck:SetChecked(db.skipWarbandTokens)
 
     -- Debug Mode Checkbox
@@ -831,26 +832,26 @@ local function CreateOptionsFrame()
     debugCheck:SetPoint("TOPLEFT", skipTokensCheck, "BOTTOMLEFT", 0, -5)
     debugCheck.text = debugCheck:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     debugCheck.text:SetPoint("LEFT", debugCheck, "RIGHT", 0, 0)
-    debugCheck.text:SetText("Debug-Modus")
+    debugCheck.text:SetText(L["DEBUG_MODE"])
     debugCheck:SetChecked(db.debugMode)
 
     -- Speichern Button
     local applyBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
     applyBtn:SetSize(80, 22)
     applyBtn:SetPoint("BOTTOMRIGHT", -20, 20)
-    applyBtn:SetText("Speichern")
+    applyBtn:SetText(L["SAVE"])
 
     -- Preset speichern Button
     local presetBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
     presetBtn:SetSize(110, 22)
     presetBtn:SetPoint("BOTTOMLEFT", 20, 20)
-    presetBtn:SetText("Preset speichern")
+    presetBtn:SetText(L["SAVE_PRESET"])
 
     -- Preset löschen Button
     local deleteBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
     deleteBtn:SetSize(90, 22)
     deleteBtn:SetPoint("BOTTOM", 0, 20)
-    deleteBtn:SetText("Preset löschen")
+    deleteBtn:SetText(L["DELETE_PRESET"])
 
     -- UpdatePresetDropdown Funktion
     function optionsFrame:UpdatePresetDropdown()
@@ -858,10 +859,10 @@ local function CreateOptionsFrame()
             local info = UIDropDownMenu_CreateInfo()
             
             -- "Kein Preset" Option
-            info.text = "Kein Preset"
+            info.text = L["NO_PRESET"]
             info.func = function()
                 nameEdit:SetText("")
-                UIDropDownMenu_SetText(presetDrop, "Kein Preset")
+                UIDropDownMenu_SetText(presetDrop, L["NO_PRESET"])
             end
             UIDropDownMenu_AddButton(info)
             
@@ -892,7 +893,7 @@ local function CreateOptionsFrame()
         end
         
         if not foundPreset then
-            UIDropDownMenu_SetText(presetDrop, "Kein Preset")
+            UIDropDownMenu_SetText(presetDrop, L["NO_PRESET"])
         end
     end
 
@@ -902,7 +903,7 @@ local function CreateOptionsFrame()
         local newMax = tonumber(maxEdit:GetText()) or 0
         db.min = Clamp(newMin, 0, 10000)
         db.max = Clamp(newMax, 0, 10000)
-        print(string.format("%s: Verkaufe Items mit Item Level %d–%d.", addonName, db.min, db.max))
+        print(string.format("%s: " .. L["SELL_RANGE_SET"], addonName, db.min, db.max))
         if MerchantFrame and MerchantFrame:IsShown() then
             SellItems()
         end
@@ -912,28 +913,28 @@ local function CreateOptionsFrame()
     presetBtn:SetScript("OnClick", function()
         local name = nameEdit:GetText():gsub("^%s+",""):gsub("%s+$","")
         if name == "" then
-            print(addonName .. ": Bitte einen Preset-Namen eingeben.")
+            print(addonName .. ": " .. L["PRESET_NAME_REQUIRED"])
             return
         end
         db.presets = db.presets or {}
         db.presets[name] = { min = db.min, max = db.max }
-        print(string.format("%s: Preset '%s' (%d-%d) gespeichert.", addonName, name, db.min, db.max))
+        print(string.format("%s: " .. L["PRESET_SAVED"], addonName, name, db.min, db.max))
         optionsFrame:UpdatePresetDropdown()
     end)
 
     deleteBtn:SetScript("OnClick", function()
         local name = nameEdit:GetText():gsub("^%s+",""):gsub("%s+$","")
         if name == "" then
-            print(addonName .. ": Bitte ein Preset zum Löschen wählen.")
+            print(addonName .. ": " .. L["PRESET_DELETE_SELECT"])
             return
         end
         if db.presets and db.presets[name] then
             db.presets[name] = nil
-            print(string.format("%s: Preset '%s' gelöscht.", addonName, name))
+            print(string.format("%s: " .. L["PRESET_DELETED"], addonName, name))
             nameEdit:SetText("")
             optionsFrame:UpdatePresetDropdown()
         else
-            print(string.format("%s: Preset '%s' nicht gefunden.", addonName, name))
+            print(string.format("%s: " .. L["PRESET_NOT_FOUND"], addonName, name))
         end
     end)
 
@@ -968,7 +969,7 @@ local function CreateMerchantButton()
     merchantButton:SetSize(90, 18)
     -- Position rechts neben dem "Buyback" Tab, aber unterhalb der Tab-Leiste
     merchantButton:SetPoint("TOPRIGHT", MerchantFrame, "TOPRIGHT", -10, -60)
-    merchantButton:SetText("GSV Verkauf")
+    merchantButton:SetText(L["SELL_BUTTON"])
     merchantButton:SetFrameStrata("HIGH") -- Höhere Z-Koordinate für bessere Sichtbarkeit
     merchantButton:SetFrameLevel(100) -- Noch höhere Priorität
     merchantButton:SetScript("OnClick", SellItems)
@@ -976,9 +977,9 @@ local function CreateMerchantButton()
     -- Tooltip hinzufügen für bessere Benutzerfreundlichkeit
     merchantButton:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("GearScoreVendor", 1, 1, 1)
-        GameTooltip:AddLine(string.format("Verkauft Items mit Item-Level %d-%d", db.min, db.max), nil, nil, nil, true)
-        GameTooltip:AddLine("Warband Tokens werden übersprungen", 0.7, 0.7, 0.7, true)
+        GameTooltip:SetText(L["SELL_BUTTON_TOOLTIP"], 1, 1, 1)
+        GameTooltip:AddLine(string.format(L["SELL_BUTTON_TOOLTIP_DESC"], db.min, db.max), nil, nil, nil, true)
+        GameTooltip:AddLine(L["WARBAND_TOKENS_SKIPPED"], 0.7, 0.7, 0.7, true)
         GameTooltip:Show()
     end)
     
@@ -998,16 +999,16 @@ local LDB, LDBIcon
 -- Slash‑Commands                                                       --
 ------------------------------------------------------------------------
 local function PrintUsage()
-    print("|cffffff78/gsv min <zahl>|r  – Setzt das minimale Item-Level.")
-    print("|cffffff78/gsv max <zahl>|r  – Setzt das maximale Item-Level.")
-    print("|cffffff78/gsv show|r        – Zeigt die aktuellen Werte an.")
-    print("|cffffff78/gsv preset <name> <min> <max>|r – Erstellt/überschreibt ein Preset.")
-    print("|cffffff78/gsv use <name>|r       – Wendet ein Preset an.")
-    print("|cffffff78/gsv list|r             – Listet alle Presets.")
-    print("|cffffff78/gsv sell|r        – Startet den Verkauf im Händlerfenster.")
-    print("|cffffff78/gsv tokens|r      – Zeigt Token-Management GUI.")
-    print("|cffffff78/gsv debug|r       – Schaltet Debug-Meldungen ein/aus.")
-    print("|cffffff78/gsv icon|r        – Zeigt/versteckt das Minimap-Symbol.")
+    print("|cffffff78/gsv min <zahl>|r  – " .. L["HELP_MIN"])
+    print("|cffffff78/gsv max <zahl>|r  – " .. L["HELP_MAX"])
+    print("|cffffff78/gsv show|r        – " .. L["HELP_SHOW"])
+    print("|cffffff78/gsv preset <name> <min> <max>|r – " .. L["HELP_PRESET_CREATE"])
+    print("|cffffff78/gsv use <name>|r       – " .. L["HELP_USE"])
+    print("|cffffff78/gsv list|r             – " .. L["HELP_LIST"])
+    print("|cffffff78/gsv sell|r        – " .. L["HELP_SELL"])
+    print("|cffffff78/gsv tokens|r      – " .. L["HELP_TOKENS"])
+    print("|cffffff78/gsv debug|r       – " .. L["HELP_DEBUG"])
+    print("|cffffff78/gsv icon|r        – " .. L["HELP_ICON"])
 end
 
 local function SlashHandler(msg)
@@ -1022,7 +1023,7 @@ local function SlashHandler(msg)
         local num = tonumber(val)
         if num then
             db.min = Clamp(num, 0, 10000)
-            print(string.format("%s: Minimales Item-Level auf %d gesetzt.", addonName, db.min))
+            print(string.format("%s: " .. L["MIN_LEVEL_SET"], addonName, db.min))
         else
             PrintUsage()
         end
@@ -1030,12 +1031,12 @@ local function SlashHandler(msg)
         local num = tonumber(val)
         if num then
             db.max = Clamp(num, 0, 10000)
-            print(string.format("%s: Maximales Item-Level auf %d gesetzt.", addonName, db.max))
+            print(string.format("%s: " .. L["MAX_LEVEL_SET"], addonName, db.max))
         else
             PrintUsage()
         end
     elseif cmd == "show" then
-        print(string.format("%s: Verkauft Items mit Item-Level von %d bis %d.", addonName, db.min, db.max))
+        print(string.format("%s: " .. L["CURRENT_RANGE"], addonName, db.min, db.max))
     elseif cmd == "preset" then
         local _, name, min, max = strsplit(" ", msg:lower(), 4)
         if name and min and max then
@@ -1044,7 +1045,7 @@ local function SlashHandler(msg)
             if numMin and numMax then
                 db.presets = db.presets or {}
                 db.presets[name] = { min = Clamp(numMin, 0, 10000), max = Clamp(numMax, 0, 10000) }
-                print(string.format("%s: Preset '%s' mit Item-Level %d-%d gespeichert.", addonName, name, db.presets[name].min, db.presets[name].max))
+                print(string.format("%s: " .. L["PRESET_SAVED"], addonName, name, db.presets[name].min, db.presets[name].max))
             else
                 PrintUsage()
             end
@@ -1057,22 +1058,22 @@ local function SlashHandler(msg)
             if db.presets and db.presets[name] then
                 db.min = db.presets[name].min
                 db.max = db.presets[name].max
-                print(string.format("%s: Preset '%s' (%d-%d) angewendet.", addonName, name, db.min, db.max))
+                print(string.format("%s: " .. L["PRESET_LOADED"], addonName, name))
                 SellItems()
             else
-                print(string.format("%s: Preset '%s' nicht gefunden.", addonName, name))
+                print(string.format("%s: " .. L["PRESET_NOT_FOUND"], addonName, name))
             end
         else
             PrintUsage()
         end
     elseif cmd == "list" then
         if db.presets and next(db.presets) then
-            print(string.format("%s: Alle gespeicherten Presets:", addonName))
+            print(string.format("%s: " .. L["ALL_PRESETS"], addonName))
             for name, preset in pairs(db.presets) do
                 print(string.format("  - %s (%d-%d)", name, preset.min, preset.max))
             end
         else
-            print(string.format("%s: Keine gespeicherten Presets gefunden.", addonName))
+            print(string.format("%s: " .. L["NO_PRESETS_FOUND"], addonName))
         end
     elseif cmd == "sell" then
         SellItems()
@@ -1082,32 +1083,32 @@ local function SlashHandler(msg)
         if #tokens > 0 then
             tokenFrame:Show()
         else
-            print(addonName .. ": Keine Warband Tokens im Inventar gefunden.")
+            print(addonName .. ": " .. L["NO_WARBAND_TOKENS"])
         end
     elseif cmd == "delete" then
         local _, name = strsplit(" ", msg, 2)
         if name and db.presets and db.presets[name] then
             db.presets[name] = nil
-            print(string.format("%s: Preset '%s' gelöscht.", addonName, name))
+            print(string.format("%s: " .. L["PRESET_DELETED"], addonName, name))
         else
-            print(string.format("%s: Preset '%s' nicht gefunden.", addonName, name or ""))
+            print(string.format("%s: " .. L["PRESET_NOT_FOUND"], addonName, name or ""))
         end
     elseif cmd == "debug" then
         db.debugMode = not db.debugMode
-        local status = db.debugMode and "aktiviert" or "deaktiviert"
-        print(string.format("%s: Debug-Modus %s.", addonName, status))
+        local statusKey = db.debugMode and "DEBUG_ENABLED" or "DEBUG_DISABLED"
+        print(string.format("%s: " .. L[statusKey], addonName))
     elseif cmd == "icon" then
         if LDBIcon then
             db.minimap.hide = not db.minimap.hide
             if db.minimap.hide then
                 LDBIcon:Hide("GearScoreVendor")
-                print(addonName .. ": Minimap-Symbol versteckt.")
+                print(addonName .. ": " .. L["MINIMAP_HIDDEN"])
             else
                 LDBIcon:Show("GearScoreVendor")
-                print(addonName .. ": Minimap-Symbol angezeigt.")
+                print(addonName .. ": " .. L["MINIMAP_SHOWN"])
             end
         else
-            print(addonName .. ": Minimap-Button nicht gefunden.")
+            print(addonName .. ": " .. L["MINIMAP_NOT_FOUND"])
         end
     else
         PrintUsage()
@@ -1155,11 +1156,11 @@ f:SetScript("OnEvent", function(self, event, ...)
                     end
                 end,
                 OnTooltipShow = function(tooltip)
-                    tooltip:AddLine("|cffffffffGearScoreVendor")
-                    tooltip:AddLine(string.format("Verkauft Items mit Item-Level %d-%d", db.min, db.max))
+                    tooltip:AddLine("|cffffffff" .. L["ADDON_NAME"])
+                    tooltip:AddLine(string.format(L["SELL_BUTTON_TOOLTIP_DESC"], db.min, db.max))
                     tooltip:AddLine(" ")
-                    tooltip:AddLine("|cff00ff00Linksklick:|r Optionen öffnen")
-                    tooltip:AddLine("|cff00ff00Rechtsklick:|r Hilfe anzeigen")
+                    tooltip:AddLine("|cff00ff00" .. L["LEFT_CLICK"] .. "|r " .. L["OPEN_OPTIONS"])
+                    tooltip:AddLine("|cff00ff00" .. L["RIGHT_CLICK"] .. "|r " .. L["SHOW_HELP"])
                 end,
             })
             
